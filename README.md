@@ -310,6 +310,5 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 <div align="center">
 
-**Built with ❤️ for the Descope Hackathon**
 
 </div>
