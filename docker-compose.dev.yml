@@ -1,0 +1,139 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: intelliflow-postgres-dev
+    environment:
+      POSTGRES_DB: intelliflow
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - intelliflow-dev-network
+
+  # Redis for Celery and Caching
+  redis:
+    image: redis:7-alpine
+    container_name: intelliflow-redis-dev
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - intelliflow-dev-network
+
+  # Agent A - Email Summarizer (Development with hot reload)
+  agent-a:
+    build:
+      context: ./backend
+      dockerfile: agent-a-summarizer/Dockerfile.dev
+    container_name: intelliflow-agent-a-dev
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/intelliflow
+      - REDIS_URL=redis://redis:6379
+      - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID}
+      - DESCOPE_MANAGEMENT_KEY=${DESCOPE_MANAGEMENT_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - AGENT_B_URL=http://agent-b:8000
+      - LOG_LEVEL=DEBUG
+      - DEBUG=true
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/agent-a-summarizer/src:/app/src
+      - ./backend/shared:/app/shared
+    networks:
+      - intelliflow-dev-network
+
+  # Agent B - Calendar Manager (Development with hot reload)
+  agent-b:
+    build:
+      context: ./backend
+      dockerfile: agent-b-calendar/Dockerfile.dev
+    container_name: intelliflow-agent-b-dev
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/intelliflow
+      - REDIS_URL=redis://redis:6379
+      - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID}
+      - DESCOPE_MANAGEMENT_KEY=${DESCOPE_MANAGEMENT_KEY}
+      - LOG_LEVEL=DEBUG
+      - DEBUG=true
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/agent-b-calendar/src:/app/src
+      - ./backend/shared:/app/shared
+    networks:
+      - intelliflow-dev-network
+
+  # API Gateway (Development)
+  api-gateway:
+    build:
+      context: ./backend/api-gateway
+      dockerfile: Dockerfile.dev
+    container_name: intelliflow-api-gateway-dev
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - AGENT_A_URL=http://agent-a:8000
+      - AGENT_B_URL=http://agent-b:8000
+      - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID}
+    ports:
+      - "3001:3000"
+    depends_on:
+      - agent-a
+      - agent-b
+    volumes:
+      - ./backend/api-gateway/src:/app/src
+    networks:
+      - intelliflow-dev-network
+
+  # Frontend (Development with hot reload)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: intelliflow-frontend-dev
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+      - NEXT_PUBLIC_DESCOPE_PROJECT_ID=${NEXT_PUBLIC_DESCOPE_PROJECT_ID}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api-gateway
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    networks:
+      - intelliflow-dev-network
+
+volumes:
+  postgres_dev_data:
+
+
+networks:
+  intelliflow-dev-network:
+    driver: bridge

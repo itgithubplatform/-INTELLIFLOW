@@ -1,0 +1,28 @@
+'use client';
+
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { AuthProvider } from '@descope/react-sdk';
+import { useState } from 'react';
+import { descopeConfig } from '@/config/descope.config';
+
+export function Providers({ children }: { children: React.ReactNode }) {
+    const [queryClient] = useState(
+        () =>
+            new QueryClient({
+                defaultOptions: {
+                    queries: {
+                        staleTime: 60 * 1000, // 1 minute
+                        retry: 1,
+                    },
+                },
+            })
+    );
+
+    return (
+        <AuthProvider projectId={descopeConfig.projectId}>
+            <QueryClientProvider client={queryClient}>
+                {children}
+            </QueryClientProvider>
+        </AuthProvider>
+    );
+}

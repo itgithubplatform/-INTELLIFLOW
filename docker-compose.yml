@@ -1,0 +1,162 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: intelliflow-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-intelliflow}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - intelliflow-network
+
+  # Redis for Celery and Caching
+  redis:
+    image: redis:7-alpine
+    container_name: intelliflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - intelliflow-network
+
+  # Agent A - Email Summarizer
+  agent-a:
+    build:
+      context: ./backend
+      dockerfile: agent-a-summarizer/Dockerfile
+    container_name: intelliflow-agent-a
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-intelliflow}
+      - REDIS_URL=redis://redis:6379
+      - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID}
+      - DESCOPE_MANAGEMENT_KEY=${DESCOPE_MANAGEMENT_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - AGENT_B_URL=http://agent-b:8000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/shared:/app/shared
+    networks:
+      - intelliflow-network
+    restart: unless-stopped
+
+  # Agent B - Calendar Manager
+  agent-b:
+    build:
+      context: ./backend
+      dockerfile: agent-b-calendar/Dockerfile
+    container_name: intelliflow-agent-b
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-intelliflow}
+      - REDIS_URL=redis://redis:6379
+      - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID}
+      - DESCOPE_MANAGEMENT_KEY=${DESCOPE_MANAGEMENT_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/shared:/app/shared
+    networks:
+      - intelliflow-network
+    restart: unless-stopped
+
+  # Celery Worker for Agent A
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: agent-a-summarizer/Dockerfile
+    container_name: intelliflow-celery-worker
+    command: celery -A src.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-intelliflow}
+      - REDIS_URL=redis://redis:6379
+      - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      - redis
+      - postgres
+      - agent-a
+    volumes:
+      - ./backend/shared:/app/shared
+    networks:
+      - intelliflow-network
+    restart: unless-stopped
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./backend/api-gateway
+      dockerfile: Dockerfile
+    container_name: intelliflow-api-gateway
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - AGENT_A_URL=http://agent-a:8000
+      - AGENT_B_URL=http://agent-b:8000
+      - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-100}
+    ports:
+      - "3001:3000"
+    depends_on:
+      - agent-a
+      - agent-b
+    networks:
+      - intelliflow-network
+    restart: unless-stopped
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        - NEXT_PUBLIC_DESCOPE_PROJECT_ID=${NEXT_PUBLIC_DESCOPE_PROJECT_ID}
+    container_name: intelliflow-frontend
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+      - NEXT_PUBLIC_DESCOPE_PROJECT_ID=${NEXT_PUBLIC_DESCOPE_PROJECT_ID}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api-gateway
+    networks:
+      - intelliflow-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  intelliflow-network:
+    driver: bridge
